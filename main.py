@@ -1,4 +1,4 @@
-﻿import os
+import os
 import time
 import logging
 from datetime import datetime
@@ -8,8 +8,7 @@ import csv
 import json
 import threading
 from dotenv import load_dotenv
-
-from telebot import types  # Добавлено для кнопок
+from telebot import types
 
 # Настройки логирования
 os.makedirs("logs", exist_ok=True)
@@ -36,7 +35,6 @@ class BinanceArbitrageBot:
         self.log_folder = "logs"
         self.logger = self.setup_logger()
 
-        # Регистрация команд
         self.bot.message_handler(commands=['start'])(self.start_analysis)
         self.bot.message_handler(commands=['stop'])(self.stop_analysis)
         self.bot.message_handler(commands=['status'])(self.send_status)
@@ -136,6 +134,16 @@ class BinanceArbitrageBot:
             for opp in opportunities:
                 f.write(json.dumps(opp) + "\n")
 
+    def send_csv_report(self, chat_id, csv_path):
+        if os.path.exists(csv_path):
+            try:
+                with open(csv_path, "rb") as f:
+                    self.bot.send_document(chat_id, f, caption="📎 Отчет по прибыльным связкам")
+            except Exception as e:
+                self.send_message(chat_id, f"Ошибка отправки CSV: {str(e)}")
+        else:
+            self.send_message(chat_id, "📄 CSV отчет не найден.")
+
     def send_message(self, chat_id, text):
         try:
             self.bot.send_message(chat_id, text, parse_mode='Markdown')
@@ -184,11 +192,15 @@ class BinanceArbitrageBot:
                         for opp in opportunities
                     ])
 
+                    date = datetime.utcnow().strftime("%Y-%m-%d")
+                    csv_path = os.path.join(self.log_folder, f"{date}.csv")
+
                     for chat_id in self.user_chat_ids:
                         self.send_message(
                             chat_id,
-                            text=f"Найдены связки с прибылью:\n{formatted_opportunities}"
+                            text=f"📈 *Найдены связки с прибылью:*\n\n{formatted_opportunities}"
                         )
+                        self.send_csv_report(chat_id, csv_path)
                 else:
                     self.logger.info("Связки не найдены")
 
@@ -212,7 +224,6 @@ class BinanceArbitrageBot:
     def show_settings(self, message):
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
         markup.add("/download_report")
-
         self.bot.send_message(
             message.chat.id,
             (
@@ -268,7 +279,7 @@ class BinanceArbitrageBot:
 
         try:
             with open(csv_path, "rb") as f:
-                self.bot.send_document(chat_id, f)
+                self.bot.send_document(chat_id, f, caption="📎 Отчет по связкам")
         except Exception as e:
             self.send_message(chat_id, f"Ошибка выгрузки: {str(e)}")
 
