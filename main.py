@@ -296,6 +296,8 @@ if __name__ == "__main__":
     # Удаляем webhook
     bot.delete_webhook()
     print("Webhook успешно удален.")
+    webhook_info = bot.get_webhook_info()
+    print(webhook_info)
     
     # Создаем основной класс бота
     arbitrage_bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
