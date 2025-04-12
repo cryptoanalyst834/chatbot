@@ -289,16 +289,51 @@ class BinanceArbitrageBot:
         self.bot.message_handler(commands=['set_deposit'])(self.set_deposit)
         self.bot.polling(none_stop=True)
 
+# if __name__ == "__main__":
+#     # Создаем экземпляр бота
+#     bot = telebot.TeleBot(TELEGRAM_TOKEN)
+    
+#     # Удаляем webhook
+#     bot.delete_webhook()
+#     print("Webhook успешно удален.")
+#     webhook_info = bot.get_webhook_info()
+#     print(webhook_info)
+    
+#     # Создаем основной класс бота
+#     arbitrage_bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
+#     arbitrage_bot.run()
+
+
+
+
+import os
+import sys
+
+LOCKFILE = "/tmp/bot.lock"
+
+def acquire_lock():
+    if os.path.exists(LOCKFILE):
+        print("Бот уже запущен. Завершение работы.")
+        sys.exit(1)
+    with open(LOCKFILE, "w") as f:
+        f.write(str(os.getpid()))
+
+def release_lock():
+    if os.path.exists(LOCKFILE):
+        os.remove(LOCKFILE)
+
 if __name__ == "__main__":
-    # Создаем экземпляр бота
-    bot = telebot.TeleBot(TELEGRAM_TOKEN)
-    
-    # Удаляем webhook
-    bot.delete_webhook()
-    print("Webhook успешно удален.")
-    webhook_info = bot.get_webhook_info()
-    print(webhook_info)
-    
-    # Создаем основной класс бота
-    arbitrage_bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
-    arbitrage_bot.run()
+    acquire_lock()
+    try:
+        # Создаем экземпляр бота
+        bot = telebot.TeleBot(TELEGRAM_TOKEN)
+        # Удаляем webhook
+        bot.delete_webhook()
+        print("Webhook успешно удален.")
+        webhook_info = bot.get_webhook_info()
+        print(webhook_info)
+        # Создаем основной класс бота
+        arbitrage_bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
+        arbitrage_bot.run()
+    finally:
+        release_lock()
