@@ -290,5 +290,7 @@ class BinanceArbitrageBot:
         self.bot.polling(none_stop=True)
 
 if __name__ == "__main__":
+    bot = telebot.TeleBot('TELEGRAM_TOKEN')
+    bot.delete_webhook()
     bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
     bot.run()
