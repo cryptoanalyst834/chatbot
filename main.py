@@ -14,8 +14,8 @@ from telebot import types
 # Загрузка .env
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # пример: https://chatbot-production-xxxxx.up.railway.app
-SECRET_PATH = TELEGRAM_TOKEN.split(":")[0]  # Защита endpoint'а вебхука
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # например: https://chatbot-production-xxx.up.railway.app
+SECRET_PATH = TELEGRAM_TOKEN.split(":")[0]
 
 # Flask
 app = Flask(__name__)
@@ -36,7 +36,7 @@ class BinanceArbitrageBot:
         self.log_folder = "logs"
         self.thread = None
 
-        # Команды
+        # Регистрация команд
         bot.register_message_handler(self.start_analysis, commands=['start'])
         bot.register_message_handler(self.stop_analysis, commands=['stop'])
         bot.register_message_handler(self.send_status, commands=['status'])
@@ -148,6 +148,7 @@ class BinanceArbitrageBot:
         else:
             bot.send_message(message.chat.id, "📊 Отчет пока не сформирован.")
 
+# Создание экземпляра
 arbitrage_bot = BinanceArbitrageBot()
 
 # Webhook endpoint
@@ -157,12 +158,12 @@ def webhook():
     bot.process_new_updates([update])
     return "OK", 200
 
-# Установка вебхука при запуске
+# Установка Webhook при первом запросе
 @app.before_first_request
 def setup_webhook():
     bot.remove_webhook()
     bot.set_webhook(url=f"{WEBHOOK_URL}/{SECRET_PATH}")
-    logging.info("✅ Вебхук установлен")
+    logging.info("✅ Webhook установлен")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
