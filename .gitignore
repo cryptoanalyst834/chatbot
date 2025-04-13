@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Env file
+.env
+
+# Logs
+*.log
+logs/
+*.csv
+*.json
+
+# System files
+.DS_Store
+*.swp
+*.swo
+
+# Byte-compiled / optimized / DLL files
+*.pyc
+*.pyd
+*.pdb
+
+# Venv
+venv/
+.venv/
+
+# Railway metadata (если используешь)
+.railway/
