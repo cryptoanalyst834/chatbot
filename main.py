@@ -1,7 +1,7 @@
 import os
 import time
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, UTC
 import telebot
 import requests
 import csv
@@ -105,7 +105,8 @@ class BinanceArbitrageBot:
     def log_opportunities(self, opportunities):
         if not opportunities:
             return
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now = datetime.now(UTC)
+        date = now.strftime("%Y-%m-%d")
         csv_file = os.path.join(self.log_folder, f"{date}.csv")
         json_file = os.path.join(self.log_folder, f"{date}.json")
         with open(csv_file, "a", newline="") as f:
@@ -114,7 +115,7 @@ class BinanceArbitrageBot:
                 writer.writerow(["Время", "Монета", "Спред, %", "Прибыль, USDT"])
             for opp in opportunities:
                 writer.writerow([
-                    datetime.now(timezone.utc).isoformat(),
+                    now.isoformat(),
                     opp["coin"],
                     opp["spread"],
                     opp["profit"]
@@ -176,14 +177,11 @@ class BinanceArbitrageBot:
                         f"{opp['coin']}: {opp['spread']}% ({opp['profit']} USDT)"
                         for opp in opportunities
                     ])
-                    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                    csv_path = os.path.join(self.log_folder, f"{date}.csv")
                     for chat_id in self.user_chat_ids:
                         self.send_message(
                             chat_id,
-                            text=f"📈 *Найдены связки с прибылью:*\n{formatted_opportunities}"
+                            text=f"📈 *Найдены связки с прибылью:*\n\n{formatted_opportunities}"
                         )
-                        self.send_csv_report(chat_id, csv_path)
                 else:
                     self.logger.info("Связки не найдены")
             except Exception as e:
@@ -204,7 +202,7 @@ class BinanceArbitrageBot:
 
     def show_settings(self, message):
         markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add("/download_report")
+        markup.add("/download_report", "/stop", "/status")
         self.bot.send_message(
             message.chat.id,
             (
@@ -251,16 +249,13 @@ class BinanceArbitrageBot:
 
     def download_report(self, message):
         chat_id = message.chat.id
-        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        now = datetime.now(UTC)
+        date = now.strftime("%Y-%m-%d")
         csv_path = os.path.join(self.log_folder, f"{date}.csv")
         if not os.path.exists(csv_path):
             self.send_message(chat_id, "📊 Нет данных для выгрузки")
             return
-        try:
-            with open(csv_path, "rb") as f:
-                self.bot.send_document(chat_id, f, caption="📎 Отчет по связкам")
-        except Exception as e:
-            self.send_message(chat_id, f"Ошибка выгрузки: {str(e)}")
+        self.send_csv_report(chat_id, csv_path)
 
     def run(self):
         self.bot.message_handler(commands=['set_min_spread'])(self.set_min_spread)
@@ -269,5 +264,5 @@ class BinanceArbitrageBot:
         self.bot.polling(none_stop=True)
 
 if __name__ == "__main__":
-    bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
-    bot.run()
+    arbitrage_bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
+    arbitrage_bot.run()
