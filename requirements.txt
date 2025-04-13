@@ -1,5 +1,4 @@
-python-dotenv
-fastapi
-uvicorn
 pyTelegramBotAPI
+python-dotenv
+flask
 requests
