@@ -1,4 +1,1 @@
-worker: python main.py
-git add Procfile
-git commit -m "Добавлен Procfile для Railway"
-git push
+web: uvicorn main:app --host=0.0.0.0 --port=8080
