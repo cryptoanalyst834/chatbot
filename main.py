@@ -1,204 +1,154 @@
 import os
-import time
 import logging
 from datetime import datetime, UTC
+from dotenv import load_dotenv
+import telebot
 import requests
 import csv
 import json
-import threading
-from dotenv import load_dotenv
-from telebot import types, TeleBot
-from fastapi import FastAPI, Request
-import telebot
+from flask import Flask, request
 
-# Загрузка переменных окружения
+# Загрузка .env
 load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://chatbot-production-cc5d.up.railway.app
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Указать в Railway переменных окружения
 
-# Настройки логирования
+# Логирование
 os.makedirs("logs", exist_ok=True)
-logging.basicConfig(
-    filename='logs/arbitrage.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(message)s'
-)
+logging.basicConfig(filename='logs/arbitrage.log', level=logging.INFO)
 
-bot = TeleBot(TELEGRAM_TOKEN)
-app = FastAPI()
+bot = telebot.TeleBot(TOKEN)
+app = Flask(__name__)
 
-# Класс бота
-class BinanceArbitrageBot:
-    def __init__(self):
-        self.min_spread = 3.0
-        self.fee = 0.001
-        self.initial_deposit = 1000.0
-        self.running = False
-        self.btc_pairs = []
-        self.user_chat_ids = set()
-        self.log_folder = "logs"
-        self.logger = self.setup_logger()
-        self.register_handlers()
+# Пары, пользователи, настройки
+user_chat_ids = set()
+btc_pairs = []
+running = True
+min_spread = 3.0
+fee = 0.001
+deposit = 1000.0
+log_folder = "logs"
 
-    def setup_logger(self):
-        logger = logging.getLogger("ArbitrageBotLogger")
-        logger.setLevel(logging.INFO)
-        handler = logging.FileHandler(os.path.join(self.log_folder, "arbitrage.log"))
-        handler.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
-        logger.addHandler(handler)
-        return logger
+# Получение актуальных цен
+def get_prices():
+    try:
+        res = requests.get("https://api.binance.com/api/v3/ticker/price")
+        res.raise_for_status()
+        return {item['symbol']: float(item['price']) for item in res.json()}
+    except Exception as e:
+        logging.error(f"Цены ошибка: {e}")
+        return {}
 
-    def register_handlers(self):
-        @bot.message_handler(commands=['start'])
-        def start(message):
-            chat_id = message.chat.id
-            self.user_chat_ids.add(chat_id)
-            bot.send_message(chat_id, "🔍 Анализ запущен.")
-            if not self.running:
-                self.running = True
-                self.get_trade_pairs()
-                thread = threading.Thread(target=self.run_analysis)
-                thread.daemon = True
-                thread.start()
+# Получение монет с парами BTC и USDT
+def get_trade_pairs():
+    try:
+        res = requests.get("https://api.binance.com/api/v3/exchangeInfo")
+        symbols = res.json()['symbols']
+        btc = set()
+        usdt = set()
+        for s in symbols:
+            if s['status'] != 'TRADING': continue
+            if s['quoteAsset'] == 'BTC': btc.add(s['baseAsset'])
+            if s['quoteAsset'] == 'USDT': usdt.add(s['baseAsset'])
+        return list(btc & usdt)
+    except Exception as e:
+        logging.error(f"Пары ошибка: {e}")
+        return []
 
-        @bot.message_handler(commands=['stop'])
-        def stop(message):
-            chat_id = message.chat.id
-            if chat_id in self.user_chat_ids:
-                self.user_chat_ids.remove(chat_id)
-                bot.send_message(chat_id, "⛔️ Вы отписаны от анализа.")
-            if not self.user_chat_ids:
-                self.running = False
-
-        @bot.message_handler(commands=['status'])
-        def status(message):
-            status_text = "✅ Активен" if self.running else "❌ Остановлен"
-            bot.send_message(
-                message.chat.id,
-                f"*📊 Статус:*\nАнализ: {status_text}\nМинимальный спред: `{self.min_spread}%`\n"
-                f"Комиссия: `{self.fee*100}%`\nДепозит: `{self.initial_deposit} USDT`",
-                parse_mode="Markdown"
-            )
-
-        @bot.message_handler(commands=['settings'])
-        def settings(message):
-            markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-            markup.add("/download_report", "/stop")
-            bot.send_message(
-                message.chat.id,
-                "⚙️ *Настройки*\nНажмите кнопку ниже, чтобы скачать отчет:",
-                reply_markup=markup,
-                parse_mode="Markdown"
-            )
-
-        @bot.message_handler(commands=['download_report'])
-        def download(message):
-            self.send_csv_report(message.chat.id)
-
-    def get_prices(self):
+# Расчет связок
+def calculate(prices, pairs):
+    btc_usdt = prices.get('BTCUSDT', 1)
+    result = []
+    for coin in pairs:
+        usdt = f"{coin}USDT"
+        btc = f"{coin}BTC"
+        if usdt not in prices or btc not in prices:
+            continue
         try:
-            response = requests.get("https://api.binance.com/api/v3/ticker/price")
-            response.raise_for_status()
-            return {item['symbol']: float(item['price']) for item in response.json()}
+            step1 = (deposit / prices[usdt]) * (1 - fee)
+            step2 = step1 * prices[btc] * (1 - fee)
+            step3 = step2 * btc_usdt * (1 - fee)
+            spread = (step3 / deposit - 1) * 100
+            if spread > min_spread:
+                result.append({
+                    "coin": coin,
+                    "spread": round(spread, 2),
+                    "profit": round(step3 - deposit, 2)
+                })
         except Exception as e:
-            self.logger.error(f"Ошибка получения цен: {e}")
-            return {}
+            logging.error(f"{coin} расчет ошибка: {e}")
+    return sorted(result, key=lambda x: x['spread'], reverse=True)
 
-    def get_trade_pairs(self):
-        try:
-            response = requests.get("https://api.binance.com/api/v3/exchangeInfo")
-            symbols = response.json()['symbols']
-            btc_coins = set()
-            usdt_coins = set()
-            for s in symbols:
-                if s['status'] != 'TRADING':
-                    continue
-                if s['quoteAsset'] == 'BTC':
-                    btc_coins.add(s['baseAsset'])
-                if s['quoteAsset'] == 'USDT':
-                    usdt_coins.add(s['baseAsset'])
-            self.btc_pairs = list(btc_coins & usdt_coins)
-        except Exception as e:
-            self.logger.error(f"Ошибка получения пар: {e}")
+# Лог в CSV
+def log_to_file(data):
+    if not data:
+        return
+    date = datetime.now(UTC).strftime("%Y-%m-%d")
+    path = os.path.join(log_folder, f"{date}.csv")
+    with open(path, "a", newline="") as f:
+        writer = csv.writer(f)
+        if f.tell() == 0:
+            writer.writerow(["Время", "Монета", "Спред", "Прибыль"])
+        for d in data:
+            writer.writerow([datetime.now(UTC).isoformat(), d["coin"], d["spread"], d["profit"]])
 
-    def calculate_arbitrage(self, prices):
-        opportunities = []
-        btc_usdt = prices.get('BTCUSDT', 1)
-        for coin in self.btc_pairs:
-            usdt_pair = f"{coin}USDT"
-            btc_pair = f"{coin}BTC"
-            if usdt_pair not in prices or btc_pair not in prices:
-                continue
-            try:
-                coins_bought = (self.initial_deposit / prices[usdt_pair]) * (1 - self.fee)
-                btc_earned = coins_bought * prices[btc_pair] * (1 - self.fee)
-                final_usdt = btc_earned * btc_usdt * (1 - self.fee)
-                spread = (final_usdt / self.initial_deposit - 1) * 100
-                if spread > self.min_spread:
-                    opportunities.append({
-                        "coin": coin,
-                        "spread": round(spread, 2),
-                        "profit": round(final_usdt - self.initial_deposit, 2)
-                    })
-            except Exception as e:
-                self.logger.error(f"Ошибка для {coin}: {e}")
-        return sorted(opportunities, key=lambda x: x["spread"], reverse=True)
+# Обработка Telegram-команд
+@bot.message_handler(commands=['start'])
+def start(msg):
+    cid = msg.chat.id
+    user_chat_ids.add(cid)
+    bot.send_message(cid, "🔍 Бот запущен. Используйте /download_report для получения отчета.")
 
-    def log_opportunities(self, opportunities):
-        if not opportunities:
-            return
-        date = datetime.now(UTC).strftime("%Y-%m-%d")
-        csv_path = os.path.join(self.log_folder, f"{date}.csv")
-        with open(csv_path, "a", newline="") as f:
-            writer = csv.writer(f)
-            if f.tell() == 0:
-                writer.writerow(["Время", "Монета", "Спред, %", "Прибыль, USDT"])
-            for opp in opportunities:
-                writer.writerow([
-                    datetime.now(UTC).isoformat(),
-                    opp["coin"],
-                    opp["spread"],
-                    opp["profit"]
-                ])
+@bot.message_handler(commands=['stop'])
+def stop(msg):
+    cid = msg.chat.id
+    if cid in user_chat_ids:
+        user_chat_ids.remove(cid)
+        bot.send_message(cid, "⛔️ Вы отписались от анализа.")
 
-    def send_csv_report(self, chat_id):
-        date = datetime.now(UTC).strftime("%Y-%m-%d")
-        csv_path = os.path.join(self.log_folder, f"{date}.csv")
-        if os.path.exists(csv_path):
-            with open(csv_path, "rb") as f:
-                bot.send_document(chat_id, f)
-        else:
-            bot.send_message(chat_id, "📊 Отчет пока не сформирован")
+@bot.message_handler(commands=['download_report'])
+def download(msg):
+    date = datetime.now(UTC).strftime("%Y-%m-%d")
+    path = os.path.join(log_folder, f"{date}.csv")
+    if os.path.exists(path):
+        with open(path, "rb") as f:
+            bot.send_document(msg.chat.id, f)
+    else:
+        bot.send_message(msg.chat.id, "📄 Отчет еще не сформирован.")
 
-    def run_analysis(self):
-        while self.running:
-            try:
-                prices = self.get_prices()
-                if not prices:
-                    time.sleep(60)
-                    continue
-                opportunities = self.calculate_arbitrage(prices)
-                self.log_opportunities(opportunities)
-                if opportunities:
-                    text = "\n".join([f"{opp['coin']}: {opp['spread']}% ({opp['profit']} USDT)" for opp in opportunities])
-                    for chat_id in self.user_chat_ids:
-                        bot.send_message(chat_id, f"📈 *Найдены связки с прибылью:*\n{text}", parse_mode="Markdown")
-            except Exception as e:
-                self.logger.error(f"Ошибка в цикле анализа: {e}")
-            time.sleep(60)
+# Webhook маршрут
+@app.route('/webhook', methods=['POST'])
+def webhook():
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return '', 200
+    else:
+        return 'Unsupported Media Type', 415
 
-# Endpoint Webhook для Telegram
-@app.post(f"/{TELEGRAM_TOKEN}")
-async def webhook(request: Request):
-    data = await request.json()
-    update = telebot.types.Update.de_json(data)
-    bot.process_new_updates([update])
-    return {"ok": True}
+# Фоновый поток анализа
+def analysis_loop():
+    global btc_pairs
+    btc_pairs = get_trade_pairs()
+    while True:
+        prices = get_prices()
+        if prices:
+            deals = calculate(prices, btc_pairs)
+            log_to_file(deals)
+            if deals:
+                msg = "\n".join([f"{d['coin']}: {d['spread']}% ({d['profit']} USDT)" for d in deals])
+                for cid in user_chat_ids:
+                    bot.send_message(cid, f"📈 Найдены связки:\n{msg}")
+        time.sleep(60)
 
-# Инициализация и запуск
-arbitrage_bot = BinanceArbitrageBot()
+# Установка webhook при запуске
+def setup_webhook():
+    bot.remove_webhook()
+    bot.set_webhook(url=WEBHOOK_URL)
+    logging.info("Webhook установлен")
 
-# Установка webhook (разово, или в startup)
-import requests as r
-set_hook_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/setWebhook?url={WEBHOOK_URL}/{TELEGRAM_TOKEN}"
-r.get(set_hook_url)
+if __name__ == '__main__':
+    setup_webhook()
+    threading.Thread(target=analysis_loop, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
