@@ -159,11 +159,11 @@ def webhook():
     return "OK", 200
 
 # Установка Webhook при первом запросе
-@app.before_first_request
 def setup_webhook():
     bot.remove_webhook()
     bot.set_webhook(url=f"{WEBHOOK_URL}/{SECRET_PATH}")
     logging.info("✅ Webhook установлен")
 
 if __name__ == "__main__":
+    setup_webhook()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
