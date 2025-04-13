@@ -1,16 +1,21 @@
 import os
 import time
 import logging
-from datetime import datetime, UTC
+from datetime import datetime, timezone
 import telebot
 import requests
 import csv
 import json
-import threading
 from dotenv import load_dotenv
 from telebot import types
+from flask import Flask, request
 
-# Настройки логирования
+# === Конфигурация ===
+load_dotenv()
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Указать ваш URL (например, от Railway или Render)
+
+# === Настройка логирования ===
 os.makedirs("logs", exist_ok=True)
 logging.basicConfig(
     filename='logs/arbitrage.log',
@@ -18,27 +23,19 @@ logging.basicConfig(
     format='%(asctime)s - %(message)s'
 )
 
-# Загрузка переменных окружения
-load_dotenv()
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+bot = telebot.TeleBot(TELEGRAM_TOKEN)
+app = Flask(__name__)
 
 class BinanceArbitrageBot:
-    def __init__(self, token, min_spread=3.0, fee=0.001, initial_deposit=1000.0):
-        self.token = token
+    def __init__(self, min_spread=3.0, fee=0.001, initial_deposit=1000.0):
         self.min_spread = min_spread
         self.fee = fee
         self.initial_deposit = initial_deposit
-        self.bot = telebot.TeleBot(token)
         self.running = False
         self.btc_pairs = []
         self.user_chat_ids = set()
         self.log_folder = "logs"
         self.logger = self.setup_logger()
-        self.bot.message_handler(commands=['start'])(self.start_analysis)
-        self.bot.message_handler(commands=['stop'])(self.stop_analysis)
-        self.bot.message_handler(commands=['status'])(self.send_status)
-        self.bot.message_handler(commands=['settings'])(self.show_settings)
-        self.bot.message_handler(commands=['download_report'])(self.download_report)
 
     def setup_logger(self):
         logger = logging.getLogger("ArbitrageBotLogger")
@@ -105,164 +102,109 @@ class BinanceArbitrageBot:
     def log_opportunities(self, opportunities):
         if not opportunities:
             return
-        now = datetime.now(UTC)
-        date = now.strftime("%Y-%m-%d")
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         csv_file = os.path.join(self.log_folder, f"{date}.csv")
-        json_file = os.path.join(self.log_folder, f"{date}.json")
         with open(csv_file, "a", newline="") as f:
             writer = csv.writer(f)
             if f.tell() == 0:
                 writer.writerow(["Время", "Монета", "Спред, %", "Прибыль, USDT"])
             for opp in opportunities:
                 writer.writerow([
-                    now.isoformat(),
+                    datetime.now(timezone.utc).isoformat(),
                     opp["coin"],
                     opp["spread"],
                     opp["profit"]
                 ])
-        with open(json_file, "a") as f:
-            for opp in opportunities:
-                f.write(json.dumps(opp) + "\n")
 
-    def send_csv_report(self, chat_id, csv_path):
+    def send_csv_report(self, chat_id):
+        date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        csv_path = os.path.join(self.log_folder, f"{date}.csv")
         if os.path.exists(csv_path):
             try:
                 with open(csv_path, "rb") as f:
-                    self.bot.send_document(chat_id, f, caption="📎 Отчет по прибыльным связкам")
+                    bot.send_document(chat_id, f, caption="📎 Отчет по связкам")
             except Exception as e:
-                self.send_message(chat_id, f"Ошибка отправки CSV: {str(e)}")
+                bot.send_message(chat_id, f"Ошибка отправки CSV: {str(e)}")
         else:
-            self.send_message(chat_id, "📄 CSV отчет не найден.")
+            bot.send_message(chat_id, "📄 CSV отчет не найден.")
 
-    def send_message(self, chat_id, text):
+# === Экземпляр бота ===
+arb_bot = BinanceArbitrageBot()
+
+# === Telegram handlers ===
+@bot.message_handler(commands=['start'])
+def handle_start(message):
+    chat_id = message.chat.id
+    if chat_id not in arb_bot.user_chat_ids:
+        arb_bot.user_chat_ids.add(chat_id)
+        bot.send_message(chat_id, "🔍 Анализ запущен для вашего аккаунта")
+    if not arb_bot.running:
+        arb_bot.running = True
+        arb_bot.get_trade_pairs()
+        threading.Thread(target=run_analysis, daemon=True).start()
+        bot.send_message(chat_id, "Анализ запущен")
+
+@bot.message_handler(commands=['stop'])
+def handle_stop(message):
+    chat_id = message.chat.id
+    arb_bot.user_chat_ids.discard(chat_id)
+    bot.send_message(chat_id, "⚠️ Вы отписаны от уведомлений")
+    if not arb_bot.user_chat_ids:
+        arb_bot.running = False
+
+@bot.message_handler(commands=['status'])
+def handle_status(message):
+    status = "✅ Активен" if arb_bot.running else "❌ Остановлен"
+    bot.send_message(
+        message.chat.id,
+        f"📊 *Статус:*\nАнализ: {status}\nСпред: `{arb_bot.min_spread}%`\nКомиссия: `{arb_bot.fee*100}%`\nДепозит: `{arb_bot.initial_deposit} USDT`",
+        parse_mode='Markdown'
+    )
+
+@bot.message_handler(commands=['settings'])
+def handle_settings(message):
+    markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
+    markup.add("/download_report")
+    bot.send_message(
+        message.chat.id,
+        "⚙️ *Настройки*\n📥 Нажмите кнопку ниже, чтобы скачать отчет",
+        reply_markup=markup,
+        parse_mode='Markdown'
+    )
+
+@bot.message_handler(commands=['download_report'])
+def handle_download(message):
+    arb_bot.send_csv_report(message.chat.id)
+
+def run_analysis():
+    while arb_bot.running:
         try:
-            self.bot.send_message(chat_id, text, parse_mode='Markdown')
+            prices = arb_bot.get_prices()
+            if not prices:
+                time.sleep(60)
+                continue
+            opportunities = arb_bot.calculate_arbitrage(prices)
+            arb_bot.log_opportunities(opportunities)
+            if opportunities:
+                formatted = "\n".join([f"{o['coin']}: {o['spread']}% ({o['profit']} USDT)" for o in opportunities])
+                for chat_id in arb_bot.user_chat_ids:
+                    bot.send_message(chat_id, f"📈 *Найдены связки:*\n{formatted}", parse_mode='Markdown')
         except Exception as e:
-            self.logger.error(f"Ошибка отправки сообщения {chat_id}: {str(e)}")
+            arb_bot.logger.error(f"Ошибка анализа: {str(e)}")
+        time.sleep(60)
 
-    def start_analysis(self, message):
-        chat_id = message.chat.id
-        if chat_id not in self.user_chat_ids:
-            self.user_chat_ids.add(chat_id)
-            self.send_message(chat_id, "🔍 Анализ запущен для вашего аккаунта")
-        if not self.running:
-            self.running = True
-            self.get_trade_pairs()
-            self.analysis_thread = threading.Thread(target=self.run_analysis)
-            self.analysis_thread.daemon = True
-            self.analysis_thread.start()
-            self.send_message(chat_id, "Анализ запущен")
+# === Flask route for Telegram Webhook ===
+@app.route(f"/{TELEGRAM_TOKEN}", methods=['POST'])
+def webhook():
+    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
+    bot.process_new_updates([update])
+    return "ok", 200
 
-    def stop_analysis(self, message):
-        chat_id = message.chat.id
-        if chat_id in self.user_chat_ids:
-            self.user_chat_ids.remove(chat_id)
-            self.send_message(chat_id, "⚠️ Вы отписаны от уведомлений")
-        if not self.user_chat_ids:
-            self.running = False
-            self.logger.info("Анализ остановлен: нет подписчиков")
-
-    def run_analysis(self):
-        while self.running:
-            try:
-                prices = self.get_prices()
-                if not prices:
-                    self.logger.warning("Не удалось получить цены. Повторная попытка через минуту.")
-                    time.sleep(60)
-                    continue
-                opportunities = self.calculate_arbitrage(prices)
-                self.log_opportunities(opportunities)
-                if opportunities:
-                    formatted_opportunities = "\n".join([
-                        f"{opp['coin']}: {opp['spread']}% ({opp['profit']} USDT)"
-                        for opp in opportunities
-                    ])
-                    for chat_id in self.user_chat_ids:
-                        self.send_message(
-                            chat_id,
-                            text=f"📈 *Найдены связки с прибылью:*\n\n{formatted_opportunities}"
-                        )
-                else:
-                    self.logger.info("Связки не найдены")
-            except Exception as e:
-                self.logger.error(f"Ошибка в цикле анализа: {str(e)}")
-            time.sleep(60)
-
-    def send_status(self, message):
-        chat_id = message.chat.id
-        status = "Активен ✅" if self.running else "Остановлен ❌"
-        response = (
-            f"📊 *Статус бота*\n"
-            f"Анализ: {status}\n"
-            f"Минимальный спред: `{self.min_spread}%`\n"
-            f"Комиссия: `{self.fee*100}%`\n"
-            f"Депозит: `{self.initial_deposit} USDT`"
-        )
-        self.send_message(chat_id, response)
-
-    def show_settings(self, message):
-        markup = types.ReplyKeyboardMarkup(resize_keyboard=True)
-        markup.add("/download_report", "/stop", "/status")
-        self.bot.send_message(
-            message.chat.id,
-            (
-                "⚙️ *Настройки*\n"
-                "Чтобы изменить параметры, отправьте:\n"
-                "/set_min_spread <число>\n"
-                "/set_fee <число от 0 до 1>\n"
-                "/set_deposit <число>\n"
-                "📥 Нажмите кнопку ниже, чтобы скачать отчет"
-            ),
-            reply_markup=markup,
-            parse_mode='Markdown'
-        )
-
-    def set_min_spread(self, message):
-        try:
-            new_value = float(message.text.split()[1])
-            if new_value < 0:
-                raise ValueError
-            self.min_spread = new_value
-            self.send_message(message.chat.id, f"Минимальный спред установлен: {new_value}%")
-        except (IndexError, ValueError):
-            self.send_message(message.chat.id, "Ошибка: /set_min_spread <число>")
-
-    def set_fee(self, message):
-        try:
-            new_value = float(message.text.split()[1])
-            if not 0 <= new_value <= 1:
-                raise ValueError
-            self.fee = new_value
-            self.send_message(message.chat.id, f"Комиссия установлена: {new_value*100}%")
-        except (IndexError, ValueError):
-            self.send_message(message.chat.id, "Ошибка: /set_fee <число от 0 до 1>")
-
-    def set_deposit(self, message):
-        try:
-            new_value = float(message.text.split()[1])
-            if new_value <= 0:
-                raise ValueError
-            self.initial_deposit = new_value
-            self.send_message(message.chat.id, f"Депозит установлен: {new_value} USDT")
-        except (IndexError, ValueError):
-            self.send_message(message.chat.id, "Ошибка: /set_deposit <число>")
-
-    def download_report(self, message):
-        chat_id = message.chat.id
-        now = datetime.now(UTC)
-        date = now.strftime("%Y-%m-%d")
-        csv_path = os.path.join(self.log_folder, f"{date}.csv")
-        if not os.path.exists(csv_path):
-            self.send_message(chat_id, "📊 Нет данных для выгрузки")
-            return
-        self.send_csv_report(chat_id, csv_path)
-
-    def run(self):
-        self.bot.message_handler(commands=['set_min_spread'])(self.set_min_spread)
-        self.bot.message_handler(commands=['set_fee'])(self.set_fee)
-        self.bot.message_handler(commands=['set_deposit'])(self.set_deposit)
-        self.bot.polling(none_stop=True)
+@app.route("/", methods=['GET'])
+def index():
+    return "Bot is alive!"
 
 if __name__ == "__main__":
-    arbitrage_bot = BinanceArbitrageBot(TELEGRAM_TOKEN)
-    arbitrage_bot.run()
+    bot.remove_webhook()
+    bot.set_webhook(url=f"{WEBHOOK_URL}/{TELEGRAM_TOKEN}")
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
