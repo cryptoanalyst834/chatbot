@@ -14,7 +14,7 @@ from telebot import types
 # Загрузка .env
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # например: https://chatbot-production-xxx.up.railway.app
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 SECRET_PATH = TELEGRAM_TOKEN.split(":")[0]
 
 # Flask
@@ -36,7 +36,7 @@ class BinanceArbitrageBot:
         self.log_folder = "logs"
         self.thread = None
 
-        # Регистрация команд
+        # Команды
         bot.register_message_handler(self.start_analysis, commands=['start'])
         bot.register_message_handler(self.stop_analysis, commands=['stop'])
         bot.register_message_handler(self.send_status, commands=['status'])
@@ -148,14 +148,18 @@ class BinanceArbitrageBot:
         else:
             bot.send_message(message.chat.id, "📊 Отчет пока не сформирован.")
 
-# Создание экземпляра
+# Инициализация бота
 arbitrage_bot = BinanceArbitrageBot()
 
-# Webhook endpoint
+# Webhook обработчик
 @app.route(f"/{SECRET_PATH}", methods=["POST"])
 def webhook():
-    update = telebot.types.Update.de_json(request.stream.read().decode("utf-8"))
-    bot.process_new_updates([update])
+    try:
+        json_str = request.stream.read().decode("utf-8")
+        update = telebot.types.Update.de_json(json_str)
+        bot.process_new_updates([update])
+    except Exception as e:
+        logging.error(f"Ошибка webhook: {e}")
     return "OK", 200
 
 # Установка Webhook
@@ -165,12 +169,13 @@ def setup_webhook():
         time.sleep(1)
         success = bot.set_webhook(url=f"{WEBHOOK_URL}/{SECRET_PATH}")
         if success:
-            logging.info("✅ Webhook успешно установлен")
+            logging.info("✅ Webhook установлен")
         else:
             logging.warning("⚠️ Не удалось установить webhook")
     except Exception as e:
         logging.error(f"❌ Ошибка при установке webhook: {e}")
 
+# Точка входа
 if __name__ == "__main__":
     setup_webhook()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
